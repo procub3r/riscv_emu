@@ -33,15 +33,63 @@ pub const Core = struct {
                         self.x[rd] = self.x[rs1] +% imm;
                     },
                     0b010 => {
+                        // TODO: test this instruction
                         decode_log.info("slti x{d}, x{d}, 0x{x:0>4}", .{ rd, rs1, imm });
                         const rs1_signed: i32 = @bitCast(self.x[rs1]);
                         const imm_signed: i12 = @bitCast(imm);
-                        self.x[rd] = @intFromBool(rs1_signed < imm_signed);
+                        const imm_signed_extended: i32 = @intCast(imm_signed);
+                        self.x[rd] = @intFromBool(rs1_signed < imm_signed_extended);
+                    },
+                    0b011 => {
+                        decode_log.info("sltiu x{d}, x{d}, 0x{x:0>4}", .{ rd, rs1, imm });
+                        const imm_signed: i12 = @bitCast(imm);
+                        const imm_signed_extended: i32 = @intCast(imm_signed);
+                        const imm_extended: u32 = @bitCast(imm_signed_extended);
+                        self.x[rd] = @intFromBool(rs1 < imm_extended);
+                    },
+                    0b100 => {
+                        decode_log.info("xori x{d}, x{d}, 0x{x:0>4}", .{ rd, rs1, imm });
+                        const imm_signed: i12 = @bitCast(imm);
+                        const imm_signed_extended: i32 = @intCast(imm_signed);
+                        const imm_extended: u32 = @bitCast(imm_signed_extended);
+                        self.x[rd] = rs1 ^ imm_extended;
+                    },
+                    0b110 => {
+                        decode_log.info("ori x{d}, x{d}, 0x{x:0>4}", .{ rd, rs1, imm });
+                        const imm_signed: i12 = @bitCast(imm);
+                        const imm_signed_extended: i32 = @intCast(imm_signed);
+                        const imm_extended: u32 = @bitCast(imm_signed_extended);
+                        self.x[rd] = rs1 | imm_extended;
+                    },
+                    0b111 => {
+                        decode_log.info("andi x{d}, x{d}, 0x{x:0>4}", .{ rd, rs1, imm });
+                        const imm_signed: i12 = @bitCast(imm);
+                        const imm_signed_extended: i32 = @intCast(imm_signed);
+                        const imm_extended: u32 = @bitCast(imm_signed_extended);
+                        self.x[rd] = rs1 & imm_extended;
+                    },
+                    0b001 => {
+                        const shamt: u5 = @truncate(imm); // lower 5 bits of imm
+                        decode_log.info("slli x{d}, x{d}, 0x{x:0>4}", .{ rd, rs1, shamt });
+                        self.x[rd] = rs1 << shamt;
+                    },
+                    0b101 => {
+                        if (imm == 0) {
+                            const shamt: u5 = @truncate(imm); // lower 5 bits of imm
+                            decode_log.info("srli x{d}, x{d}, 0x{x:0>4}", .{ rd, rs1, shamt });
+                            self.x[rd] = rs1 >> shamt;
+                        } else if (imm == 0x400) {
+                            const shamt: u5 = @truncate(imm); // lower 5 bits of imm
+                            decode_log.info("srai x{d}, x{d}, 0x{x:0>4}", .{ rd, rs1, shamt });
+                            decode_log.warn("Instruction srai not implemented", .{});
+                        }
                     },
                     else => {},
                 }
             },
-            else => {},
+            else => {
+                decode_log.warn("Unimplimented opcode 0b{b:0>7}", .{opcode});
+            },
         }
     }
 
@@ -50,7 +98,7 @@ pub const Core = struct {
         dump_log.debug("register dump", .{});
         var i: usize = 0;
         while (i < 16) : (i += 1) {
-            dump_log.debug("x{d:<2}= 0x{x:0>4}  " ** 2, .{ i, self.x[i], 16 + i, self.x[16 + i] });
+            dump_log.debug("x{d:<2}= 0x{x:0>8}  " ** 2, .{ i, self.x[i], 16 + i, self.x[16 + i] });
         }
     }
 };

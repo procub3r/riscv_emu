@@ -9,6 +9,6 @@ pub fn main() !void {
     var core = rv.Core.init();
     core.execute(0b00110010101000101000001010010011);
     core.dump();
-    core.execute(0b00110010101100101010001110010011);
+    core.execute(0b01000000000000101101001110010011);
     core.dump();
 }

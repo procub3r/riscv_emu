@@ -51,9 +51,9 @@ fn getImmediate(instr: anytype) u32 {
     };
 }
 
-fn unimplementedInstr(pc: u32, instr: u32) noreturn {
+fn illegalInstr(pc: u32, instr: u32) noreturn {
     @setCold(true);
-    std.debug.panic("unimplemented instruction 0x{x} at 0x{x}", .{ instr, pc });
+    std.debug.panic("illegal instruction 0x{x} at 0x{x}", .{ instr, pc });
 }
 
 // simple RV32I core with a single hart
@@ -89,7 +89,7 @@ pub const Core = struct {
             .jalr => {
                 const instr = castInstr(InstrI, instr_raw);
                 if (instr.funct3 != 0) { // funct3 must be 0b000 for jalr
-                    unimplementedInstr(self.pc, instr_raw);
+                    illegalInstr(self.pc, instr_raw);
                 }
                 self.x[instr.rd] = self.pc +% 4; // link
                 // TODO: handle jumps to misaligned addresses
@@ -97,7 +97,26 @@ pub const Core = struct {
                 // (x >> 1 << 1) clears the least significant bit of x
                 return;
             },
-            .branch => {},
+            .branch => {
+                const instr = castInstr(InstrB, instr_raw);
+                const x: i32 = @bitCast(self.x[instr.rs1]);
+                const y: i32 = @bitCast(self.x[instr.rs2]);
+                const BranchType = enum(u3) { beq, bne, invalid0, invalid1, blt, bge, bltu, bgeu };
+                const condition = switch (@as(BranchType, @enumFromInt(instr.funct3))) {
+                    .beq => x == y,
+                    .bne => x != y,
+                    .blt => x < y,
+                    .bge => x >= y,
+                    // unsigned compare:
+                    .bltu => self.x[instr.rs1] < self.x[instr.rs2],
+                    .bgeu => self.x[instr.rs1] >= self.x[instr.rs2],
+                    else => illegalInstr(self.pc, instr_raw),
+                };
+                if (condition) {
+                    self.pc +%= signExtend(getImmediate(instr));
+                    return;
+                }
+            },
             .load => {},
             .store => {},
             .imm => {},

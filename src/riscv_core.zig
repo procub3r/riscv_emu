@@ -33,6 +33,29 @@ fn castInstr(comptime InstrType: type, instr: u32) InstrType {
     return @as(InstrType, @bitCast(instr));
 }
 
+// sign extend into a 32 bit integer
+// (there has GOT to be a better way)
+fn signExtend(x: anytype) u32 {
+    return @bitCast(@as(i32, @as(std.meta.Int(.signed, @typeInfo(@TypeOf(x)).Int.bits), @bitCast(x))));
+}
+
+fn getImmediate(instr: anytype) u32 {
+    // the immediate is multiplied by 2 for B and J instructions before returning
+    return switch (@TypeOf(instr)) {
+        InstrI => instr.imm0_11,
+        InstrS => @as(u12, instr.imm5_11) << 5 | instr.imm0_4,
+        InstrB => @as(u13, instr.imm12) << 12 | @as(u13, instr.imm11) << 11 | @as(u13, instr.imm5_10) << 5 | @as(u13, instr.imm1_4) << 1,
+        InstrU => @as(u32, instr.imm12_31) << 12,
+        InstrJ => @as(u21, instr.imm20) << 20 | @as(u21, instr.imm12_19) << 12 | @as(u21, instr.imm11) << 11 | @as(u21, instr.imm1_10) << 1,
+        else => @compileError("getImmediate: encountered wrong type"),
+    };
+}
+
+fn unimplementedInstr(pc: u32, instr: u32) noreturn {
+    @setCold(true);
+    std.debug.panic("unimplemented instruction 0x{x} at 0x{x}", .{ instr, pc });
+}
+
 // simple RV32I core with a single hart
 pub const Core = struct {
     pc: Register, // program counter
@@ -50,14 +73,30 @@ pub const Core = struct {
         switch (@as(OpcodeType, @enumFromInt(opcode))) {
             .lui => {
                 const instr = castInstr(InstrU, instr_raw);
-                self.x[instr.rd] = @as(u32, instr.imm12_31) << 12;
+                self.x[instr.rd] = getImmediate(instr);
             },
             .auipc => {
                 const instr = castInstr(InstrU, instr_raw);
-                self.x[instr.rd] = (@as(u32, instr.imm12_31) << 12) +% self.pc;
+                self.x[instr.rd] = self.pc +% getImmediate(instr);
             },
-            .jal => {},
-            .jalr => {},
+            .jal => {
+                const instr = castInstr(InstrJ, instr_raw);
+                self.x[instr.rd] = self.pc +% 4; // link
+                // TODO: handle jumps to misaligned addresses
+                self.pc +%= signExtend(getImmediate(instr));
+                return; // return here to avoid incrementing pc at the end
+            },
+            .jalr => {
+                const instr = castInstr(InstrI, instr_raw);
+                if (instr.funct3 != 0) { // funct3 must be 0b000 for jalr
+                    unimplementedInstr(self.pc, instr_raw);
+                }
+                self.x[instr.rd] = self.pc +% 4; // link
+                // TODO: handle jumps to misaligned addresses
+                self.pc = (self.x[instr.rs1] +% signExtend(getImmediate(instr))) >> 1 << 1;
+                // (x >> 1 << 1) clears the least significant bit of x
+                return;
+            },
             .branch => {},
             .load => {},
             .store => {},

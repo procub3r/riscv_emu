@@ -60,12 +60,25 @@ fn illegalInstr(pc: u32, instr: u32) noreturn {
 pub const Core = struct {
     pc: Register, // program counter
     x: [reg_count]Register, // registers x0 to x31
+    memory: []u8,
 
     const reg_count = 32;
     const Self = @This();
 
-    pub fn init() Self {
-        return Self{ .pc = 0, .x = .{0} ** reg_count };
+    pub fn init(memory: []u8) Self {
+        return Self{ .pc = 0, .x = .{0} ** reg_count, .memory = memory };
+    }
+
+    // (I might not be doing this right. works tho)
+    fn load(self: *Self, comptime T: type, addr: u32) T {
+        return std.mem.bytesAsValue(T, self.memory[addr..][0..@sizeOf(T)]).*;
+    }
+
+    pub fn step(self: *Self) void {
+        if (self.pc >= self.memory.len) {
+            std.debug.panic("pc 0x{x} exceeds memory bounds", .{self.pc});
+        }
+        self.execute(self.load(u32, self.pc));
     }
 
     pub fn execute(self: *Self, instr_raw: u32) void {
@@ -117,7 +130,20 @@ pub const Core = struct {
                     return;
                 }
             },
-            .load => {},
+            .load => {
+                const instr = castInstr(InstrI, instr_raw);
+                const LoadType = enum(u3) { lb, lh, lw, invalid0, lbu, lhu };
+                const address = signExtend(getImmediate(instr)) +% self.x[instr.rs1];
+                self.x[instr.rd] = switch (@as(LoadType, @enumFromInt(instr.funct3))) {
+                    .lb => signExtend(self.load(u8, address)),
+                    // TODO: implement
+                    .lh => 0,
+                    .lw => 0,
+                    .lbu => 0,
+                    .lhu => 0,
+                    else => illegalInstr(self.pc, instr_raw),
+                };
+            },
             .store => {},
             .imm => {},
             .reg => {},

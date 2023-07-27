@@ -6,9 +6,14 @@ pub const std_options = struct {
 };
 
 pub fn main() !void {
-    var core = rv.Core.init();
-    // jalr x24, x8, 6
+    var mem = [_]u8{
+        0x67, 0x0c, 0x64, 0x00, // jalr x24, x8, 6
+        0x00, 0x00, 0x00, 0x00, // padding
+        0x67, 0x0c, 0x64, 0x00, // jalr x24, x8, 6
+    };
+    var core = rv.Core.init(&mem);
     core.x[8] = 3;
-    core.execute(0b00000000011001000000110001100111);
+    core.step();
+    core.step();
     core.dump();
 }

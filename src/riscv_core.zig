@@ -70,15 +70,20 @@ pub const Core = struct {
     }
 
     // (I might not be doing this right. works tho)
-    fn load(self: *Self, comptime T: type, addr: u32) T {
+    fn load(self: *Self, addr: u32, comptime T: type) T {
         return std.mem.bytesAsValue(T, self.memory[addr..][0..@sizeOf(T)]).*;
+    }
+
+    fn store(self: *Self, addr: u32, value: anytype) void {
+        const T = @TypeOf(value);
+        std.mem.bytesAsValue(T, self.memory[addr..][0..@sizeOf(T)]).* = value;
     }
 
     pub fn step(self: *Self) void {
         if (self.pc >= self.memory.len) {
             std.debug.panic("pc 0x{x} exceeds memory bounds", .{self.pc});
         }
-        self.execute(self.load(u32, self.pc));
+        self.execute(self.load(self.pc, u32));
     }
 
     pub fn execute(self: *Self, instr_raw: u32) void {
@@ -135,17 +140,62 @@ pub const Core = struct {
                 const LoadType = enum(u3) { lb, lh, lw, invalid0, lbu, lhu };
                 const address = signExtend(getImmediate(instr)) +% self.x[instr.rs1];
                 self.x[instr.rd] = switch (@as(LoadType, @enumFromInt(instr.funct3))) {
-                    .lb => signExtend(self.load(u8, address)),
-                    // TODO: implement
-                    .lh => 0,
-                    .lw => 0,
-                    .lbu => 0,
-                    .lhu => 0,
+                    .lb => signExtend(self.load(address, u8)),
+                    .lh => signExtend(self.load(address, u16)),
+                    .lw => self.load(address, u32),
+                    .lbu => self.load(address, u8),
+                    .lhu => self.load(address, u16),
                     else => illegalInstr(self.pc, instr_raw),
                 };
             },
-            .store => {},
-            .imm => {},
+            .store => {
+                const instr = castInstr(InstrS, instr_raw);
+                const StoreType = enum(u2) { sb, sh, sw };
+                const address = signExtend(getImmediate(instr)) +% self.x[instr.rs1];
+                switch (@as(StoreType, @enumFromInt(instr.funct3))) {
+                    .sb => self.store(address, @as(u8, @truncate(self.x[instr.rs2]))),
+                    .sh => self.store(address, @as(u16, @truncate(self.x[instr.rs2]))),
+                    .sw => self.store(address, self.x[instr.rs2]),
+                    else => illegalInstr(self.pc, instr_raw),
+                }
+            },
+            .imm => {
+                const instr = castInstr(InstrI, instr_raw);
+                const ImmType = enum(u3) { addi, slli, slti, sltiu, xori, sr_li_ai, ori, andi };
+                const imm = getImmediate(instr);
+                const imm_upper = imm >> 5;
+                const shamt: u5 = @truncate(imm);
+                const imm_extended = signExtend(imm);
+                const x: i32 = @bitCast(self.x[instr.rs1]);
+                const y: i32 = @bitCast(imm_extended);
+                self.x[instr.rd] = switch (@as(ImmType, @enumFromInt(instr.funct3))) {
+                    .addi => x +% y,
+                    .slti => @intFromBool(x < y),
+                    .sltiu => @intFromBool(self.x[instr.rs1] < imm_extended),
+                    .xori => x ^ y,
+                    .ori => x | y,
+                    .andi => x & y,
+                    .slli => shiftLeft: {
+                        if (imm_upper != 0) {
+                            illegalInstr(self.pc, instr_raw);
+                        }
+                        break :shiftLeft x << shamt;
+                    },
+                    .sr_li_ai => shiftRight: {
+                        if (imm_upper == 0) { // srli
+                            break :shiftRight x >> shamt;
+                        } else if (imm_upper == 0b0100000) {
+                            if (@as(i32, @bitCast(x)) < 0) {
+                                break :shiftRight ~(~x >> shamt);
+                            } else {
+                                break :shiftRight x >> shamt;
+                            }
+                        } else {
+                            illegalInstr(self.pc, instr_raw);
+                        }
+                    },
+                };
+            },
             .reg => {},
             .fence => {},
             .system => {},

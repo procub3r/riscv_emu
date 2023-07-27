@@ -7,8 +7,12 @@ pub const std_options = struct {
 
 pub fn main() !void {
     var core = rv.Core.init();
-    core.execute(0b00110010101000101000001010010011);
+    // lui x24, 0x1337
+    core.execute(0b00000001001100110111110000110111);
     core.dump();
-    core.execute(0b01000000000000101101001110010011);
+    // auipc x8, 0x1337
+    core.execute(0b00000001001100110111010000010111);
+    // auipc x8, 0x1337
+    core.execute(0b00000001001100110111010000010111);
     core.dump();
 }

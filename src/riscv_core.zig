@@ -53,7 +53,7 @@ fn getImmediate(instr: anytype) u32 {
 
 fn illegalInstr(pc: u32, instr: u32) noreturn {
     @setCold(true);
-    std.debug.panic("illegal instruction 0x{x} at 0x{x}", .{ instr, pc });
+    std.debug.panic("illegal instruction 0x{x} at addr 0x{x}", .{ instr, pc });
 }
 
 // simple RV32I core with a single hart
@@ -83,10 +83,11 @@ pub const Core = struct {
         if (self.pc >= self.memory.len) {
             std.debug.panic("pc 0x{x} exceeds memory bounds", .{self.pc});
         }
-        self.execute(self.load(self.pc, u32));
+        self.executeNextInstr();
     }
 
-    pub fn execute(self: *Self, instr_raw: u32) void {
+    fn executeNextInstr(self: *Self) void {
+        const instr_raw = self.load(self.pc, u32);
         const opcode: u7 = @truncate(instr_raw & 0x7f);
         switch (@as(OpcodeType, @enumFromInt(opcode))) {
             .lui => {
@@ -115,92 +116,79 @@ pub const Core = struct {
                 // (x >> 1 << 1) clears the least significant bit of x
                 return;
             },
-            .branch => {
+            .branch => branchBlk: {
                 const instr = castInstr(InstrB, instr_raw);
                 const x: i32 = @bitCast(self.x[instr.rs1]);
                 const y: i32 = @bitCast(self.x[instr.rs2]);
-                const BranchType = enum(u3) { beq, bne, invalid0, invalid1, blt, bge, bltu, bgeu };
-                const condition = switch (@as(BranchType, @enumFromInt(instr.funct3))) {
-                    .beq => x == y,
-                    .bne => x != y,
-                    .blt => x < y,
-                    .bge => x >= y,
-                    // unsigned compare:
-                    .bltu => self.x[instr.rs1] < self.x[instr.rs2],
-                    .bgeu => self.x[instr.rs1] >= self.x[instr.rs2],
+                const condition = switch (instr.funct3) {
+                    0b000 => x == y, // beq
+                    0b001 => x != y, // bne
+                    0b100 => x < y, // blt
+                    0b101 => x >= y, // bge
+                    0b110 => self.x[instr.rs1] < self.x[instr.rs2], // bltu
+                    0b111 => self.x[instr.rs1] >= self.x[instr.rs2], // bgeu
                     else => illegalInstr(self.pc, instr_raw),
                 };
-                if (condition) {
-                    self.pc +%= signExtend(getImmediate(instr));
-                    return;
-                }
+                if (!condition) break :branchBlk; // don't branch if condition fails
+                self.pc +%= signExtend(getImmediate(instr));
+                return;
             },
             .load => {
                 const instr = castInstr(InstrI, instr_raw);
-                const LoadType = enum(u3) { lb, lh, lw, invalid0, lbu, lhu };
-                const address = signExtend(getImmediate(instr)) +% self.x[instr.rs1];
-                self.x[instr.rd] = switch (@as(LoadType, @enumFromInt(instr.funct3))) {
-                    .lb => signExtend(self.load(address, u8)),
-                    .lh => signExtend(self.load(address, u16)),
-                    .lw => self.load(address, u32),
-                    .lbu => self.load(address, u8),
-                    .lhu => self.load(address, u16),
+                const addr = signExtend(getImmediate(instr)) +% self.x[instr.rs1];
+                self.x[instr.rd] = switch (instr.funct3) {
+                    0b000 => signExtend(self.load(addr, u8)), // lb
+                    0b001 => signExtend(self.load(addr, u16)), // lh
+                    0b010 => self.load(addr, u32), // lw
+                    0b100 => self.load(addr, u8), // lbu
+                    0b101 => self.load(addr, u16), // lhu
                     else => illegalInstr(self.pc, instr_raw),
                 };
             },
             .store => {
                 const instr = castInstr(InstrS, instr_raw);
-                const StoreType = enum(u2) { sb, sh, sw };
-                const address = signExtend(getImmediate(instr)) +% self.x[instr.rs1];
-                switch (@as(StoreType, @enumFromInt(instr.funct3))) {
-                    .sb => self.store(address, @as(u8, @truncate(self.x[instr.rs2]))),
-                    .sh => self.store(address, @as(u16, @truncate(self.x[instr.rs2]))),
-                    .sw => self.store(address, self.x[instr.rs2]),
+                const addr = signExtend(getImmediate(instr)) +% self.x[instr.rs1];
+                switch (instr.funct3) {
+                    0b000 => self.store(addr, @as(u8, @truncate(self.x[instr.rs2]))), // sb
+                    0b001 => self.store(addr, @as(u16, @truncate(self.x[instr.rs2]))), // sh
+                    0b010 => self.store(addr, self.x[instr.rs2]), // sw
                     else => illegalInstr(self.pc, instr_raw),
                 }
             },
             .imm => {
                 const instr = castInstr(InstrI, instr_raw);
-                const ImmType = enum(u3) { addi, slli, slti, sltiu, xori, sr_li_ai, ori, andi };
                 const imm = getImmediate(instr);
                 const imm_upper = imm >> 5;
-                const shamt: u5 = @truncate(imm);
+                const shamt: u5 = @truncate(imm); // lower 5 bits of imm
                 const imm_extended = signExtend(imm);
                 const x: i32 = @bitCast(self.x[instr.rs1]);
                 const y: i32 = @bitCast(imm_extended);
-                self.x[instr.rd] = switch (@as(ImmType, @enumFromInt(instr.funct3))) {
-                    .addi => x +% y,
-                    .slti => @intFromBool(x < y),
-                    .sltiu => @intFromBool(self.x[instr.rs1] < imm_extended),
-                    .xori => x ^ y,
-                    .ori => x | y,
-                    .andi => x & y,
-                    .slli => shiftLeft: {
-                        if (imm_upper != 0) {
-                            illegalInstr(self.pc, instr_raw);
-                        }
+                const result = switch (instr.funct3) {
+                    0b000 => x +% y, // addi
+                    0b001 => shiftLeft: { // slli
+                        if (imm_upper != 0) illegalInstr(self.pc, instr_raw);
                         break :shiftLeft x << shamt;
                     },
-                    .sr_li_ai => shiftRight: {
-                        if (imm_upper == 0) { // srli
+                    0b010 => @intFromBool(x < y), // slti
+                    0b011 => @intFromBool(self.x[instr.rs1] < imm_extended), // sltiu
+                    0b100 => x ^ y, // xori
+                    0b101 => shiftRight: {
+                        if (imm_upper == 0b0000000) { // srli
                             break :shiftRight x >> shamt;
-                        } else if (imm_upper == 0b0100000) {
-                            if (@as(i32, @bitCast(x)) < 0) {
-                                break :shiftRight ~(~x >> shamt);
-                            } else {
-                                break :shiftRight x >> shamt;
-                            }
-                        } else {
-                            illegalInstr(self.pc, instr_raw);
-                        }
+                        } else if (imm_upper == 0b0100000) { // srai
+                            break :shiftRight if (@as(i32, @bitCast(x)) < 0) ~(~x >> shamt) else x >> shamt;
+                        } else illegalInstr(self.pc, instr_raw);
                     },
+                    0b110 => x | y, // ori
+                    0b111 => x & y, // andi
                 };
+                self.x[instr.rd] = @bitCast(result);
             },
             .reg => {},
             .fence => {},
             .system => {},
         }
-        self.pc += 4;
+        self.pc += 4; // increment pc to the next instr
     }
 
     // dump the state of the core to the console

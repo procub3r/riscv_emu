@@ -116,7 +116,7 @@ pub const Core = struct {
                 // (x >> 1 << 1) clears the least significant bit of x
                 return;
             },
-            .branch => branchBlk: {
+            .branch => branch: {
                 const instr = castInstr(InstrB, instr_raw);
                 const x: i32 = @bitCast(self.x[instr.rs1]);
                 const y: i32 = @bitCast(self.x[instr.rs2]);
@@ -129,7 +129,7 @@ pub const Core = struct {
                     0b111 => self.x[instr.rs1] >= self.x[instr.rs2], // bgeu
                     else => illegalInstr(self.pc, instr_raw),
                 };
-                if (!condition) break :branchBlk; // don't branch if condition fails
+                if (!condition) break :branch; // don't branch if condition fails
                 self.pc +%= signExtend(getImmediate(instr));
                 return;
             },
@@ -165,28 +165,67 @@ pub const Core = struct {
                 const y: i32 = @bitCast(imm_extended);
                 const result = switch (instr.funct3) {
                     0b000 => x +% y, // addi
-                    0b001 => shiftLeft: { // slli
+                    0b001 => slli: { // slli
                         if (imm_upper != 0) illegalInstr(self.pc, instr_raw);
-                        break :shiftLeft x << shamt;
+                        break :slli x << shamt;
                     },
                     0b010 => @intFromBool(x < y), // slti
                     0b011 => @intFromBool(self.x[instr.rs1] < imm_extended), // sltiu
                     0b100 => x ^ y, // xori
-                    0b101 => shiftRight: {
-                        if (imm_upper == 0b0000000) { // srli
-                            break :shiftRight x >> shamt;
-                        } else if (imm_upper == 0b0100000) { // srai
-                            break :shiftRight if (@as(i32, @bitCast(x)) < 0) ~(~x >> shamt) else x >> shamt;
-                        } else illegalInstr(self.pc, instr_raw);
+                    0b101 => sr: { // shift right
+                        if (imm_upper != 0b0000000 and imm_upper != 0b0100000) illegalInstr(self.pc, instr_raw);
+                        break :sr x >> shamt; // srli, srai
                     },
                     0b110 => x | y, // ori
                     0b111 => x & y, // andi
                 };
                 self.x[instr.rd] = @bitCast(result);
             },
-            .reg => {},
-            .fence => {},
-            .system => {},
+            .reg => {
+                const instr = castInstr(InstrR, instr_raw);
+                const x: i32 = @bitCast(self.x[instr.rs1]);
+                const y: i32 = @bitCast(self.x[instr.rs2]);
+                const shamt: u5 = @truncate(self.x[instr.rs2]);
+                // TODO: maybe switch over funct7 before funct3?
+                const result = switch (instr.funct3) {
+                    0b000 => switch (instr.funct7) {
+                        0b0000000 => x +% y, // add
+                        0b0100000 => x -% y, // sub
+                        else => illegalInstr(self.pc, instr_raw),
+                    },
+                    0b001 => sll: {
+                        if (instr.funct7 != 0b0000000) illegalInstr(self.pc, instr_raw);
+                        break :sll x << shamt; // sll
+                    },
+                    0b010 => slt: {
+                        if (instr.funct7 != 0b0000000) illegalInstr(self.pc, instr_raw);
+                        break :slt @as(i32, @intFromBool(x < y)); // slt
+                    },
+                    0b011 => sltu: {
+                        if (instr.funct7 != 0b0000000) illegalInstr(self.pc, instr_raw);
+                        break :sltu @as(i32, @intFromBool(self.x[instr.rs1] < self.x[instr.rs2])); // sltu
+                    },
+                    0b100 => xor: {
+                        if (instr.funct7 != 0b0000000) illegalInstr(self.pc, instr_raw);
+                        break :xor x ^ y; // xor
+                    },
+                    0b101 => sr: { // shift right
+                        if (instr.funct7 != 0b0000000 and instr.funct7 != 0b0100000) illegalInstr(self.pc, instr_raw);
+                        break :sr x >> shamt; // srl, sra
+                    },
+                    0b110 => or_: { // or is a keyword, hence or_
+                        if (instr.funct7 != 0b0000000) illegalInstr(self.pc, instr_raw);
+                        break :or_ x | y;
+                    },
+                    0b111 => and_: { // and is also a keyword
+                        if (instr.funct7 != 0b0000000) illegalInstr(self.pc, instr_raw);
+                        break :and_ x & y;
+                    },
+                };
+                self.x[instr.rd] = @bitCast(result);
+            },
+            .fence => {}, // essentially a nop in our case
+            .system => {}, // nop nop
         }
         self.pc += 4; // increment pc to the next instr
     }
